@@ -1,0 +1,90 @@
+version: "3.8"
+
+# ============================================================
+#  GoCD 20.10.0 - PoC Environment
+#  CVE-2021-43287 | CVE-2021-43288 | CVE-2021-43289 | CVE-2021-43290
+# ============================================================
+#
+# [EN] Starts a deliberately vulnerable GoCD 20.10.0 environment
+#      for research and testing purposes only.
+#      DO NOT expose this environment to the internet.
+#
+# [PT] Inicia um ambiente GoCD 20.10.0 intencionalmente vulnerável
+#      para fins de pesquisa e testes apenas.
+#      NÃO exponha este ambiente à internet.
+#
+# Usage / Uso:
+#   docker-compose up -d
+#   docker-compose down -v   # Remove volumes too / Remove volumes também
+# ============================================================
+
+services:
+
+  gocd-server:
+    image: gocd/gocd-server:v20.10.0
+    container_name: gocd-server-vuln
+    restart: unless-stopped
+    ports:
+      - "8153:8153"   # HTTP
+      - "8154:8154"   # HTTPS
+    environment:
+      # [EN] Disable SSL for easier local testing
+      # [PT] Desabilita SSL para testes locais mais simples
+      GOCD_PLUGIN_INSTALL_central-dashboard: "false"
+      JAVA_OPTS: >-
+        -Xms512m
+        -Xmx1024m
+        -Dgo.ssl.create.self.signed.certificate=true
+    volumes:
+      - gocd-server-data:/godata
+      - gocd-server-home:/home/go
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8153/go/about"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    networks:
+      - gocd-poc-net
+
+  gocd-agent:
+    image: gocd/gocd-agent-alpine-3.12:v20.10.0
+    container_name: gocd-agent-vuln
+    restart: unless-stopped
+    depends_on:
+      gocd-server:
+        condition: service_healthy
+    environment:
+      # [EN] Point agent at the server
+      # [PT] Aponta o agente para o servidor
+      GO_SERVER_URL: "https://gocd-server:8154/go"
+      AGENT_AUTO_REGISTER_HOSTNAME: "vuln-agent-01"
+      AGENT_AUTO_REGISTER_ENVIRONMENT: "poc"
+    volumes:
+      - gocd-agent-data:/go
+    networks:
+      - gocd-poc-net
+
+  # Optional: Attacker machine to receive exfiltrated data
+  # Opcional: Máquina do atacante para receber dados exfiltrados
+  attacker-listener:
+    image: python:3.11-slim
+    container_name: gocd-attacker
+    command: python3 -m http.server 9090
+    ports:
+      - "9090:9090"
+    networks:
+      - gocd-poc-net
+
+volumes:
+  gocd-server-data:
+    name: gocd-poc-server-data
+  gocd-server-home:
+    name: gocd-poc-server-home
+  gocd-agent-data:
+    name: gocd-poc-agent-data
+
+networks:
+  gocd-poc-net:
+    name: gocd-poc-network
+    driver: bridge
