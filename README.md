@@ -1,5 +1,7 @@
 # GoCD 20.10.0 — PoC: CVE-2021-43287 · CVE-2021-43288 · CVE-2021-43289 · CVE-2021-43290
 
+> **Autor / Author:** [Higor Farias](https://www.linkedin.com/in/higorgabrieldcf/) — [PRIDE Security](https://pridesec.com.br/)
+
 > ⚠️ **AVISO LEGAL / LEGAL DISCLAIMER**
 >
 > **[PT]** Material produzido exclusivamente para fins educacionais e de pesquisa em segurança ofensiva. Utilize somente em ambientes controlados com autorização explícita. O uso indevido é de responsabilidade exclusiva do utilizador.
@@ -11,16 +13,17 @@
 ## Índice / Table of Contents
 
 1. [Visão Geral / Overview](#1-visão-geral--overview)
-2. [Vulnerabilidades / Vulnerabilities](#2-vulnerabilidades--vulnerabilities)
-3. [Encadeamento de Ataque / Attack Chain](#3-encadeamento-de-ataque--attack-chain)
-4. [Pré-requisitos / Prerequisites](#4-pré-requisitos--prerequisites)
-5. [Ambiente PoC com Docker / PoC Docker Environment](#5-ambiente-poc-com-docker--poc-docker-environment)
-6. [Uso dos Scripts / Script Usage](#6-uso-dos-scripts--script-usage)
+2. [Impacto na Cadeia de Suprimentos de Software / Software Supply Chain Impact](#2-impacto-na-cadeia-de-suprimentos-de-software--software-supply-chain-impact)
+3. [Vulnerabilidades / Vulnerabilities](#3-vulnerabilidades--vulnerabilities)
+4. [Encadeamento de Ataque / Attack Chain](#4-encadeamento-de-ataque--attack-chain)
+5. [Pré-requisitos / Prerequisites](#5-pré-requisitos--prerequisites)
+6. [Ambiente PoC com Docker / PoC Docker Environment](#6-ambiente-poc-com-docker--poc-docker-environment)
+7. [Uso dos Scripts / Script Usage](#7-uso-dos-scripts--script-usage)
    - [gocd_rce_noauth.py — RCE sem autenticação / Unauthenticated RCE](#gocd_rce_noauthpy--rce-sem-autenticação--unauthenticated-rce)
    - [gocd_urldns.py — URLDNS / Detecção de desserialização](#gocd_urldnspy--urldns--detecção-de-desserialização)
-7. [Referências / References](#7-referências--references)
-8. [Cronologia / Timeline](#8-cronologia--timeline)
-9. [Mitigação / Mitigation](#9-mitigação--mitigation)
+8. [Referências / References](#8-referências--references)
+9. [Cronologia / Timeline](#9-cronologia--timeline)
+10. [Mitigação / Mitigation](#10-mitigação--mitigation)
 
 ---
 
@@ -38,7 +41,53 @@
 
 ---
 
-## 2. Vulnerabilidades / Vulnerabilities
+## 2. Impacto na Cadeia de Suprimentos de Software / Software Supply Chain Impact
+
+**[PT]** O GoCD ocupa uma posição central na cadeia de entrega de software de uma organização: ele orquestra a compilação, os testes, a geração de artefatos e os deploys em produção. Ao comprometer o servidor GoCD via RCE (como demonstrado pelo `gocd_rce_noauth.py`), um atacante obtém controle sobre **todos os estágios** desse processo — podendo inserir backdoors em binários, falsificar artefatos ou exfiltrar código-fonte e credenciais antes mesmo que qualquer produto chegue ao usuário final. O cenário é análogo ao ataque à SolarWinds (2020), onde o acesso ao pipeline de build resultou na distribuição de malware para milhares de clientes.
+
+**[EN]** GoCD occupies a central position in an organization's software delivery chain: it orchestrates builds, tests, artifact generation, and production deployments. By compromising the GoCD server via RCE (as demonstrated by `gocd_rce_noauth.py`), an attacker gains control over **every stage** of that process — enabling backdoor insertion into binaries, artifact tampering, or source code and credential exfiltration before any product reaches the end user. The scenario mirrors the SolarWinds attack (2020), where build pipeline access led to malware distribution to thousands of customers.
+
+```mermaid
+flowchart TD
+    ATK(["🕵️ Atacante / Attacker\n(não autenticado / unauthenticated)"])
+
+    subgraph EXPLOIT ["Exploração / Exploitation"]
+        E1["CVE-2021-43287\nLeitura do cruise_config\n(tokenGenerationKey + agentAutoRegisterKey)"]
+        E2["Path Traversal\nLeitura de /etc/go/jetty.xml\ne /proc/self/environ"]
+        E3["Registro de agente falso\nFake agent registration"]
+        E4["Desserialização Java\n(AspectJWeaver gadget chains)\nSobrescreve jetty.xml + restart"]
+        E5["💥 RCE no servidor GoCD\nRCE on GoCD server"]
+        E1 --> E2 --> E3 --> E4 --> E5
+    end
+
+    subgraph PIPELINE ["Pipeline CI/CD comprometido / Compromised CI/CD Pipeline"]
+        P1["📦 Build de artefatos\nBinary/artifact build"]
+        P2["🧪 Execução de testes\nTest execution"]
+        P3["📤 Publicação de pacotes\nPackage publication\n(npm, PyPI, Docker Hub...)"]
+        P4["🚀 Deploy em produção\nProduction deployment"]
+        P1 --> P2 --> P3 --> P4
+    end
+
+    subgraph IMPACT ["Impacto / Impact"]
+        I1["🔑 Vazamento de credenciais\nCredential leak\n(tokens, SSH keys, API keys)"]
+        I2["🦠 Backdoor em artefatos\nBackdoor in build artifacts"]
+        I3["📂 Exfiltração de código-fonte\nSource code exfiltration"]
+        I4["☠️ Ataque à cadeia de suprimentos\nSupply chain attack\n(usuários finais afetados / end users impacted)"]
+        I1 & I2 & I3 --> I4
+    end
+
+    ATK --> EXPLOIT
+    E5 -->|"Controle total do runner\nFull runner control"| PIPELINE
+    P1 -->|"Artefatos envenenados\nPoisoned artifacts"| I2
+    P3 -->|"Pacotes maliciosos\nMalicious packages"| I4
+    P4 -->|"Produção comprometida\nCompromised production"| I4
+    E5 -->|"Leitura de secrets\nSecrets read"| I1
+    E5 -->|"Acesso ao repositório\nRepository access"| I3
+```
+
+---
+
+## 3. Vulnerabilidades / Vulnerabilities
 
 | CVE | Tipo / Type | CVSS 3.1 | CWE | Auth |
 |-----|-------------|:---:|-----|:---:|
@@ -74,7 +123,7 @@ GET /go/add-on/business-continuity/api/plugin?folderName=&pluginName=../../../..
 
 ---
 
-## 3. Encadeamento de Ataque / Attack Chain
+## 4. Encadeamento de Ataque / Attack Chain
 
 ### `gocd_rce_noauth.py` — Cadeia completa sem autenticação / Full unauthenticated chain
 
@@ -144,7 +193,7 @@ DNS callback confirma vulnerabilidade de desserialização
 
 ---
 
-## 4. Pré-requisitos / Prerequisites
+## 5. Pré-requisitos / Prerequisites
 
 ### Dependências Python / Python dependencies
 
@@ -196,7 +245,7 @@ interactsh-client
 
 ---
 
-## 5. Ambiente PoC com Docker / PoC Docker Environment
+## 6. Ambiente PoC com Docker / PoC Docker Environment
 
 ### Iniciar o alvo vulnerável / Start the vulnerable target
 
@@ -236,7 +285,7 @@ docker-compose down -v
 
 ---
 
-## 6. Uso dos Scripts / Script Usage
+## 7. Uso dos Scripts / Script Usage
 
 ---
 
@@ -418,7 +467,7 @@ Authorization = base64( HMAC-SHA256(key=tokenGenerationKey, msg=agent_uuid) )
 
 ---
 
-## 7. Referências / References
+## 8. Referências / References
 
 ### CVE — NVD / NIST
 
@@ -452,7 +501,7 @@ Authorization = base64( HMAC-SHA256(key=tokenGenerationKey, msg=agent_uuid) )
 
 ---
 
-## 8. Cronologia / Timeline
+## 9. Cronologia / Timeline
 
 | Data / Date | Evento / Event |
 |-------------|----------------|
@@ -464,7 +513,7 @@ Authorization = base64( HMAC-SHA256(key=tokenGenerationKey, msg=agent_uuid) )
 
 ---
 
-## 9. Mitigação / Mitigation
+## 10. Mitigação / Mitigation
 
 **[PT]**
 1. **Atualize** o GoCD para a versão **≥ 21.3.0** imediatamente.
